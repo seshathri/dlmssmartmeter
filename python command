@@ -1,0 +1,1 @@
+python main.py -S /dev/ttyUSB0 -c 32 -d India -a Low -P lnt1 -w 1 -f 128 -t verbose
