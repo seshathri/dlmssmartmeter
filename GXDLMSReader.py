@@ -35,6 +35,7 @@ import os
 import datetime
 import time
 import traceback
+import json
 
 from gurux_common.enums import TraceLevel
 from gurux_common.io import Parity, StopBits
@@ -47,6 +48,7 @@ from gurux_dlms.objects import GXDLMSObject, GXDLMSObjectCollection, GXDLMSData,
 from gurux_net import GXNet
 from gurux_serial import GXSerial
 
+
 class GXDLMSReader:
     #pylint: disable=too-many-public-methods, too-many-instance-attributes
     def __init__(self, client, media, trace, invocationCounter):
@@ -54,6 +56,7 @@ class GXDLMSReader:
         self.replyBuff = bytearray(8 + 1024)
         self.waitTime = 5000
         self.logFile = open("logFile.txt", "w")
+        self.outputFile = open("output.json", "w")
         self.trace = trace
         self.media = media
         self.invocationCounter = invocationCounter
@@ -143,7 +146,7 @@ class GXDLMSReader:
         rd = GXByteBuffer()
         with self.media.getSynchronous():
             if not reply.isStreaming():
-                self.writeTrace("TX: " + self.now() + "\t" + GXByteBuffer.hex(data), TraceLevel.VERBOSE)
+                # self.writeTrace("TX: " + self.now() + "\t" + GXByteBuffer.hex(data), TraceLevel.ERROR)
                 self.media.send(data)
             pos = 0
             try:
@@ -196,18 +199,18 @@ class GXDLMSReader:
             p.waitTime = self.waitTime
             with self.media.getSynchronous():
                 data = "/?!\r\n"
-                self.writeTrace("TX: " + self.now() + "\t" + data, TraceLevel.VERBOSE)
+                # self.writeTrace("TX: " + self.now() + "\t" + data, TraceLevel.ERROR)
                 self.media.send(data)
                 if not self.media.receive(p):
                     raise Exception("Failed to received reply from the media.")
 
-                self.writeTrace("RX: " + self.now() + "\t" + str(p.reply), TraceLevel.VERBOSE)
+                self.writeTrace("RX: " + self.now() + "\t" + str(p.reply), TraceLevel.ERROR)
                 #If echo is used.
                 if data.encode() == p.reply:
                     p.reply = None
                     if not self.media.receive(p):
                         raise Exception("Failed to received reply from the media.")
-                    self.writeTrace("RX: " + self.now() + "\t" + str(p.reply), TraceLevel.VERBOSE)
+                    self.writeTrace("RX: " + self.now() + "\t" + str(p.reply), TraceLevel.ERROR)
 
             if not p.reply or p.reply[0] != ord('/'):
                 raise Exception("Invalid responce : " + str(p.reply))
@@ -244,7 +247,7 @@ class GXDLMSReader:
                 self.media.send(tmp)
                 #This sleep make sure that all meters can be read.
                 time.sleep(1)
-                self.writeTrace("TX: " + self.now() + "\t" + GXCommon.toHex(tmp), TraceLevel.VERBOSE)
+                 #self.writeTrace("TX: " + self.now() + "\t" + GXCommon.toHex(tmp), TraceLevel.ERROR)
                 p.waitTime = 200
                 if self.media.receive(p):
                     self.writeTrace("RX: " + self.now() + "\t" + str(p.reply), TraceLevel.VERBOSE)
@@ -377,7 +380,6 @@ class GXDLMSReader:
                 for it in objs:
                     if isinstance(it, (GXDLMSRegister, GXDLMSExtendedRegister)):
                         if it.canRead(3):
-                            print("inside here")
                             list_.append(GXDLMSAccessItem(AccessServiceCommandType.GET, it, 3))
                     elif isinstance(it, (GXDLMSDemandRegister)):
                         if it.canRead(4):
@@ -434,6 +436,8 @@ class GXDLMSReader:
 
     def getReadOut(self):
         #pylint: disable=unidiomatic-typecheck, broad-except
+        descriptionData =[]
+        
         for it in self.client.objects:
             if type(it) == GXDLMSObject:
                 print("Unknown Interface: " + it.objectType.__str__())
@@ -441,19 +445,27 @@ class GXDLMSReader:
             if isinstance(it, GXDLMSProfileGeneric):
                 continue
             
-            self.writeTrace("-------- Printing " + str(it.objectType) + " " + str(it.name) + " " + it.description, TraceLevel.INFO)
+            self.writeTrace("-------- Printing " +  str(it.name) + " " + it.description, TraceLevel.INFO)
+            SubData=[]
             for pos in it.getAttributeIndexToRead(True):
                 try:
                     if it.canRead(pos):
                         val = self.read(it, pos)
-                        self.showValue(pos, val)
+                        pos,val = self.showValue(pos, val)
+                        SubData.append({"index": str(pos), "value": str(val)})
                     else:
-                        self.writeTrace("Attribute" + str(pos) + " is not readable.", TraceLevel.INFO)
+                        print("Attribute" + str(pos) + " is not readable.", TraceLevel.INFO)
                 except Exception as ex:
                     self.writeTrace("Error! Index: " + str(pos) + " " + str(ex), TraceLevel.ERROR)
                     self.writeTrace(str(ex), TraceLevel.ERROR)
                     if not isinstance(ex, (GXDLMSException, TimeoutException)):
                         traceback.print_exc()
+
+            descriptionData.append({"description": it.description, "values": SubData})
+            
+        json.dump(descriptionData, open('output.json', 'w'))
+        
+
 
     def showValue(self, pos, val):
         if isinstance(val, (bytes, bytearray)):
@@ -468,14 +480,17 @@ class GXDLMSReader:
                 else:
                     str_ += str(tmp)
             val = str_
-        self.writeTrace("Index: " + str(pos) + " Value: " + str(val), TraceLevel.INFO)
-
+        
+        return pos, val
+        #self.writeTrace("Index: " + str(pos) + " Value: " + str(val), TraceLevel.INFO)
+        
+        
     def getProfileGenerics(self):
         #pylint: disable=broad-except,too-many-nested-blocks
         cells = []
         profileGenerics = self.client.objects.getObjects(ObjectType.PROFILE_GENERIC)
         for it in profileGenerics:
-            self.writeTrace("-------- Reading1 " + str(it.objectType) + " " + str(it.name) + " " + it.description, TraceLevel.INFO)
+            self.writeTrace("-------- Reading " + str(it.objectType) + " " + str(it.name) + " " + it.description, TraceLevel.INFO)
             entriesInUse = self.read(it, 7)
             entries = self.read(it, 8)
             self.writeTrace("Entries: " + str(entriesInUse) + "/" + str(entries), TraceLevel.INFO)
